@@ -101,24 +101,21 @@ if st.button("🚀 Fetch Emails", type="primary", width='stretch'):
         emails_fetched = result["emails"]
         meta           = result["sync_metadata"]
 
-        # Save to staging collection
+        # Save to staging collection via bulk_write (one round trip)
         col = db()[staging_col_name(acc["email"])]
         if emails_fetched:
-            inserted = 0
+            from pymongo import UpdateOne
+            status_box.info(f"Saving {len(emails_fetched):,} emails to database…")
+            ops = []
             for doc in emails_fetched:
                 doc["_account_email"] = acc["email"]
-                op = col.update_one(
-                    {"message_id": doc["message_id"]} if doc.get("message_id") else {"sequence_id": doc["sequence_id"]},
-                    {"$set": doc},
-                    upsert=True,
-                )
-                if op.upserted_id:
-                    inserted += 1
+                filter_q = ({"message_id": doc["message_id"]} if doc.get("message_id")
+                            else {"sequence_id": doc["sequence_id"]})
+                ops.append(UpdateOne(filter_q, {"$set": doc}, upsert=True))
+            col.bulk_write(ops, ordered=False)
 
-        # Save sync meta
+        # Save sync meta + status
         upsert_sync_meta(acc["email"], {**meta, "generated_at": datetime.utcnow().isoformat()})
-
-        # Update mailbox processing status
         total_in_staging = staging_count(acc["email"])
         upsert_status(acc["email"], {
             "status":          "synced",

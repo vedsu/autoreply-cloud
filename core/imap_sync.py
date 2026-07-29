@@ -473,7 +473,7 @@ def fetch_folder(
             if on_progress:
                 pct = progress_base + (idx / total) * progress_span
                 on_progress(min(pct, 1.0))
-            if on_status:
+            if on_status and (idx % 50 == 0 or idx == total):
                 on_status(f"{folder}: {idx}/{total}")
 
     finally:
