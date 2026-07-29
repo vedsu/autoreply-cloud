@@ -1,5 +1,5 @@
 ﻿"""Page 3 — Gemini batch classification of a synced mailbox."""
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
 
@@ -141,7 +141,7 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
     upsert_status(selected_email, {
         "status":              "classified",
         "classified_counts":   totals,
-        "classified_at":       datetime.utcnow(),
+        "classified_at":       datetime.now(timezone.utc),
         "last_error":          None if totals["errors"] == 0 else f"{totals['errors']} batch errors",
     })
 
@@ -179,7 +179,7 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
                         upsert_status(selected_email, {
                             "archived":       True,
                             "archive_s3_key": key,
-                            "archived_at":    datetime.utcnow(),
+                            "archived_at":    datetime.now(timezone.utc),
                             "status":         "archived",
                         })
                         archive_box.success(f"✅ Staging auto-archived → S3 key: `{key}`")

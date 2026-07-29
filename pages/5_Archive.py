@@ -1,5 +1,5 @@
 ﻿"""Page 5 — S3 archive + two-step staging delete."""
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
 
@@ -128,7 +128,7 @@ if st.session_state.get("archive_key") and st.session_state.get("archive_email")
                     upsert_status(acc["email"], {
                         "archived":      True,
                         "archive_s3_key": key,
-                        "archived_at":   datetime.utcnow(),
+                        "archived_at":   datetime.now(timezone.utc),
                         "status":        "archived",
                         "last_error":    None,
                     })

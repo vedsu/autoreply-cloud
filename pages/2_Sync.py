@@ -1,5 +1,5 @@
 ﻿"""Page 2 — IMAP sync for a single mailbox."""
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
 
 import streamlit as st
 
@@ -115,12 +115,12 @@ if st.button("🚀 Fetch Emails", type="primary", width='stretch'):
             col.bulk_write(ops, ordered=False)
 
         # Save sync meta + status
-        upsert_sync_meta(acc["email"], {**meta, "generated_at": datetime.utcnow().isoformat()})
+        upsert_sync_meta(acc["email"], {**meta, "generated_at": datetime.now(timezone.utc).isoformat()})
         total_in_staging = staging_count(acc["email"])
         upsert_status(acc["email"], {
             "status":          "synced",
             "synced_count":    total_in_staging,
-            "last_synced_at":  datetime.utcnow(),
+            "last_synced_at":  datetime.now(timezone.utc),
             "last_error":      None,
         })
 
