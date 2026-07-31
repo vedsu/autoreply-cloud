@@ -69,28 +69,52 @@ if remaining_staging == 0:
     st.success("✅ All emails in staging are already classified. You can archive the staging data.")
     st.stop()
 
-# ── Classify ──────────────────────────────────────────────────────────────────
+# ── Run settings ─────────────────────────────────────────────────────────────
 st.divider()
+with st.container(border=True):
+    rc1, rc2 = st.columns([2, 3])
+    with rc1:
+        max_run = st.number_input(
+            "Max emails this run (0 = all remaining)",
+            min_value=0, max_value=50_000,
+            value=0, step=100,
+            help="Useful on Streamlit Cloud where long runs time out. "
+                 "Classified emails are tracked so the next run picks up where this left off.",
+        )
+    with rc2:
+        effective = remaining_staging if max_run == 0 else min(max_run, remaining_staging)
+        st.metric("Will classify", effective,
+                  delta=f"{remaining_staging - effective} deferred" if effective < remaining_staging else None)
+
+# ── Classify ──────────────────────────────────────────────────────────────────
 if st.button("▶ Start Classification", type="primary", width='stretch'):
     upsert_status(selected_email, {"status": "classifying", "last_error": None})
 
     progress_bar = st.progress(0)
     status_box   = st.empty()
     totals = {"removal": 0, "unavailable": 0, "prospect": 0, "redirects": 0, "errors": 0}
+    provider_stats = {"gemini": 0, "deepseek": 0}
     metrics_box  = st.empty()
 
     batch_num  = 0
     total_done = 0
+    run_limit  = max_run if max_run > 0 else remaining_staging
 
     for batch in iter_staging(selected_email, batch_size=BATCH_SIZE):
+        # Trim batch if it would exceed the run limit
+        if total_done + len(batch) > run_limit:
+            batch = batch[:run_limit - total_done]
+        if not batch:
+            break
+
         batch_num += 1
         status_box.info(
             f"Classifying batch {batch_num} "
-            f"({total_done + len(batch)}/{remaining_staging} remaining)…"
+            f"({total_done + len(batch)}/{run_limit})…"
         )
 
         try:
-            results = classify_batch(batch)
+            results = classify_batch(batch, _stats=provider_stats)
             counts  = process_classification_results(results, batch, selected_email)
             for k in totals:
                 totals[k] += counts.get(k, 0)
@@ -99,7 +123,7 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
             classified_mids = [r.get("message_id") for r in results if r.get("message_id")]
             mark_staging_classified(selected_email, classified_mids)
 
-            # Emails Gemini/DeepSeek silently omitted stay unclassified → retried next run
+            # Emails silently omitted stay unclassified → retried next run
             missed = len(batch) - len(results)
             if missed > 0:
                 totals["errors"] += missed
@@ -109,15 +133,20 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
             status_box.warning(f"Batch {batch_num} failed: {e}")
 
         total_done += len(batch)
-        progress_bar.progress(min(int(total_done / remaining_staging * 100), 100))
+        progress_bar.progress(min(int(total_done / run_limit * 100), 100))
 
         metrics_box.markdown(
             f"**Removal:** {totals['removal']}  |  "
             f"**Unavailable:** {totals['unavailable']}  |  "
             f"**Prospect:** {totals['prospect']}  |  "
             f"**Redirects:** {totals['redirects']}  |  "
-            f"**Errors:** {totals['errors']}"
+            f"**Errors:** {totals['errors']}  |  "
+            f"🟢 Gemini: {provider_stats['gemini']} batches  "
+            f"🔵 DeepSeek: {provider_stats['deepseek']} batches"
         )
+
+        if total_done >= run_limit:
+            break
 
     # Finalize
     upsert_status(selected_email, {
@@ -138,10 +167,15 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
     m4.metric("Redirects",   totals["redirects"])
     m5.metric("Errors",      totals["errors"])
 
-    if totals["errors"] > 0:
-        st.warning(
-            f"{totals['errors']} emails could not be classified and will be retried on the next run."
-        )
+    p1, p2 = st.columns(2)
+    p1.metric("🟢 Gemini batches",   provider_stats["gemini"])
+    p2.metric("🔵 DeepSeek batches", provider_stats["deepseek"])
+
+    still_remaining = staging_count(selected_email, only_unclassified=True)
+    if still_remaining > 0 and total_done >= run_limit and max_run > 0:
+        st.info(f"📋 Run limit reached. **{still_remaining}** emails still remaining — run again to continue.")
+    elif totals["errors"] > 0:
+        st.warning(f"{totals['errors']} emails could not be classified and will be retried on the next run.")
     else:
         # Zero errors — auto S3 archive
         if s3_configured():

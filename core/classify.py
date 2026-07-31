@@ -133,12 +133,16 @@ def _call_deepseek(prompt: str) -> List[Dict]:
     return _parse_gemini_response(resp.choices[0].message.content or "")
 
 
-def classify_batch(docs: List[Dict[str, Any]], max_retries: int = 3) -> List[Dict[str, Any]]:
+def classify_batch(
+    docs: List[Dict[str, Any]],
+    max_retries: int = 3,
+    _stats: Dict = None,        # mutable dict accumulated by caller: {gemini, deepseek}
+) -> List[Dict[str, Any]]:
     """
     Classify a batch of raw email documents via Gemini 2.5 Flash.
     Retries with exponential backoff on transient failures.
-    Splits into halves whenever Gemini returns fewer results than expected
-    (partial omissions or full failure), recursing down to single emails.
+    Falls back to DeepSeek, then splits into halves recursing to single emails.
+    Pass a dict as _stats to track how many batches each provider handled.
     """
     if not docs:
         return []
@@ -163,9 +167,11 @@ def classify_batch(docs: List[Dict[str, Any]], max_retries: int = 3) -> List[Dic
         try:
             results = _call_gemini(prompt)
             if len(results) == len(docs):
-                return results          # perfect — all emails classified
+                if _stats is not None:
+                    _stats["gemini"] = _stats.get("gemini", 0) + 1
+                return results
             if len(results) > len(best):
-                best = results          # keep best partial result so far
+                best = results
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
         except Exception as exc:
@@ -177,10 +183,12 @@ def classify_batch(docs: List[Dict[str, Any]], max_retries: int = 3) -> List[Dic
             if attempt < max_retries:
                 time.sleep(delay)
 
-    # Gemini exhausted — try DeepSeek as fallback before splitting
+    # Gemini exhausted — try DeepSeek as fallback
     try:
         ds_results = _call_deepseek(prompt)
         if len(ds_results) == len(docs):
+            if _stats is not None:
+                _stats["deepseek"] = _stats.get("deepseek", 0) + 1
             return ds_results
         if len(ds_results) > len(best):
             best = ds_results
@@ -190,11 +198,10 @@ def classify_batch(docs: List[Dict[str, Any]], max_retries: int = 3) -> List[Dic
     # Still incomplete — split and recurse
     if len(docs) > 1:
         mid   = len(docs) // 2
-        left  = classify_batch(docs[:mid], max_retries=2)
-        right = classify_batch(docs[mid:], max_retries=2)
+        left  = classify_batch(docs[:mid], max_retries=2, _stats=_stats)
+        right = classify_batch(docs[mid:], max_retries=2, _stats=_stats)
         return left + right
 
-    # Single-email leaf: return whatever we got (may be empty)
     if last_exc and not best:
         raise last_exc
     return best
