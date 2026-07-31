@@ -1,5 +1,6 @@
 ﻿"""Page 4 — Prospect review queue (st.fragment, one card at a time)."""
 import streamlit as st
+from core.auth import require_login
 
 from core.mongo import (
     get_accounts, get_all_statuses,
@@ -13,6 +14,7 @@ _INDUSTRIES   = ["Healthcare", "Pharmaceuticals", "Finance", "Human Resources", 
 _IND_WITH_ALL = ["All"] + _INDUSTRIES
 
 st.set_page_config(page_title="Review", page_icon="🔍", layout="wide")
+require_login()
 st.title("🔍 Review Prospects")
 
 # ── Sidebar — metrics + browse/edit skipped ───────────────────────────────────

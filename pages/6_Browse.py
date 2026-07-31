@@ -1,5 +1,6 @@
 ﻿"""Page 6 — Browse & export classified emails (removal, unavailable, prospects)."""
 import streamlit as st
+from core.auth import require_login
 import pandas as pd
 
 from core.mongo import (
@@ -8,6 +9,7 @@ from core.mongo import (
 )
 
 st.set_page_config(page_title="Browse", page_icon="📋", layout="wide")
+require_login()
 st.title("📋 Browse & Export")
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
@@ -45,7 +47,7 @@ with st.sidebar:
                                          placeholder="e.g. Director, HR Manager")
 
         include_generic = st.checkbox("Include generic/irrelevant", value=False)
-        limit = st.slider("Max rows", 100, 5000, 1000, 100)
+        limit = st.slider("Max rows", 100, 50_000, 1000, 100)
         search_term = st.text_input("Search email / name / company",
                                     placeholder="e.g. @hospital.com")
 

@@ -1,5 +1,6 @@
 ﻿"""Page 1 — IMAP account management (stored in MongoDB)."""
 import streamlit as st
+from core.auth import require_login
 from core.mongo import get_accounts, upsert_account, delete_account
 from core.imap_sync import test_connection, classify_error
 
@@ -9,6 +10,7 @@ PORT_OPTIONS = {
 }
 
 st.set_page_config(page_title="Accounts", page_icon="🔑", layout="wide")
+require_login()
 st.title("🔑 IMAP Accounts")
 
 # ── Add / Update ────────────────────────────────────────────────────────────

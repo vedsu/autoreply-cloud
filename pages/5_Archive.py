@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 
 import streamlit as st
+from core.auth import require_login
 
 from core.mongo import (
     get_accounts, get_all_statuses, get_status, upsert_status,
@@ -10,6 +11,7 @@ from core.mongo import (
 from core.s3_archive import upload_csv, verify_upload, s3_configured
 
 st.set_page_config(page_title="Archive", page_icon="🗄️", layout="wide")
+require_login()
 st.title("🗄️ Archive & Delete Staging")
 
 accounts = get_accounts()

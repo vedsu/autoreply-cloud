@@ -1,12 +1,14 @@
 ﻿"""Landing page — mailbox status dashboard."""
 import streamlit as st
 from core.mongo import get_all_statuses, get_accounts, ensure_indexes
+from core.auth import require_login
 
 st.set_page_config(
     page_title="Auto-Reply Manager",
     page_icon="📬",
     layout="wide",
 )
+require_login()
 
 try:
     ensure_indexes()

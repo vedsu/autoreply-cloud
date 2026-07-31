@@ -1,7 +1,8 @@
-"""Page 3 — Gemini batch classification of a synced mailbox."""
+﻿"""Page 3 — Gemini batch classification of a synced mailbox."""
 from datetime import datetime, timezone
 
 import streamlit as st
+from core.auth import require_login
 
 from core.mongo import (
     get_accounts, get_all_statuses, upsert_status,
@@ -14,6 +15,7 @@ from core.s3_archive import upload_csv, verify_upload, s3_configured
 BATCH_SIZE = 25
 
 st.set_page_config(page_title="Classify", page_icon="🧠", layout="wide")
+require_login()
 st.title("🧠 Classify Mailbox")
 
 accounts = get_accounts()

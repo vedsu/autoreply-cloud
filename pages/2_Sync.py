@@ -2,6 +2,7 @@
 from datetime import date, timedelta, datetime, timezone
 
 import streamlit as st
+from core.auth import require_login
 
 from core.mongo import (
     get_accounts, upsert_status, upsert_sync_meta,
@@ -10,6 +11,7 @@ from core.mongo import (
 from core.imap_sync import fetch_all, test_connection, classify_error
 
 st.set_page_config(page_title="Sync", page_icon="📥", layout="wide")
+require_login()
 st.title("📥 Sync Mailbox")
 
 accounts = get_accounts()
