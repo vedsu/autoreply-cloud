@@ -3,10 +3,6 @@ import hashlib
 import os
 from datetime import datetime, timezone
 
-import streamlit as st
-
-from core.mongo import db
-
 COL_USERS = "users"
 
 
@@ -27,45 +23,30 @@ def _verify(password: str, stored: str) -> bool:
         return False
 
 
-def _user_count() -> int:
-    return db()[COL_USERS].count_documents({})
-
-
-def _find_user(username: str):
-    return db()[COL_USERS].find_one({"username": username.lower().strip()})
-
-
-def _create_user(username: str, password: str, role: str = "admin"):
-    db()[COL_USERS].insert_one({
-        "username":      username.lower().strip(),
-        "password_hash": _hash(password),
-        "role":          role,
-        "created_at":    datetime.now(timezone.utc),
-    })
-
-
 def require_login():
     """
     Call right after st.set_page_config() on every page.
-    - If no users exist: shows first-time setup form.
-    - If not authenticated: shows login form.
-    - If authenticated: injects logout button into sidebar and returns.
+    Streamlit and MongoDB are imported lazily here to prevent module-load
+    failures from poisoning sys.modules on Python 3.14 / Streamlit Cloud.
     """
+    import streamlit as st
+    from core.mongo import db
+
     if st.session_state.get("authenticated"):
-        # Inject logout into sidebar on every authenticated page
         with st.sidebar:
             st.divider()
             st.caption(f"👤 {st.session_state.get('username', '')}")
-            if st.button("🚪 Logout", key="_logout_btn", width="stretch"):
+            if st.button("🚪 Logout", key="logout_btn_sidebar"):
                 st.session_state.clear()
                 st.rerun()
         return
 
-    # ── First-time setup ──────────────────────────────────────────────────────
-    if _user_count() == 0:
+    user_count = db()[COL_USERS].count_documents({})
+
+    if user_count == 0:
+        # ── First-time setup ──────────────────────────────────────────────────
         st.title("🔐 Create Admin Account")
         st.info("No users found. Set up your admin credentials to get started.")
-
         with st.form("setup_form"):
             new_user = st.text_input("Username")
             new_pass = st.text_input("Password", type="password")
@@ -78,28 +59,30 @@ def require_login():
                 elif len(new_pass) < 6:
                     st.error("Password must be at least 6 characters.")
                 else:
-                    _create_user(new_user, new_pass)
+                    db()[COL_USERS].insert_one({
+                        "username":      new_user.lower().strip(),
+                        "password_hash": _hash(new_pass),
+                        "role":          "admin",
+                        "created_at":    datetime.now(timezone.utc),
+                    })
                     st.success("Account created — please log in.")
                     st.rerun()
-
-        st.stop()
-        return
-
-    # ── Login form ────────────────────────────────────────────────────────────
-    col_l, col_c, col_r = st.columns([1, 2, 1])
-    with col_c:
-        st.markdown("## 🔐 Login")
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            if st.form_submit_button("Login", type="primary", width="stretch"):
-                user = _find_user(username)
-                if user and _verify(password, user["password_hash"]):
-                    st.session_state["authenticated"] = True
-                    st.session_state["username"] = user["username"]
-                    st.session_state["role"] = user.get("role", "user")
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
+    else:
+        # ── Login form ────────────────────────────────────────────────────────
+        col_l, col_c, col_r = st.columns([1, 2, 1])
+        with col_c:
+            st.markdown("## 🔐 Login")
+            with st.form("login_form"):
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                if st.form_submit_button("Login", type="primary", width="stretch"):
+                    user = db()[COL_USERS].find_one({"username": username.lower().strip()})
+                    if user and _verify(password, user["password_hash"]):
+                        st.session_state["authenticated"] = True
+                        st.session_state["username"]      = user["username"]
+                        st.session_state["role"]          = user.get("role", "user")
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password.")
 
     st.stop()
