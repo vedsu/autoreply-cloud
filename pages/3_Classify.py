@@ -1,4 +1,4 @@
-﻿"""Page 3 — Gemini batch classification of a synced mailbox."""
+"""Page 3 — Gemini batch classification of a synced mailbox."""
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -6,25 +6,23 @@ import streamlit as st
 from core.mongo import (
     get_accounts, get_all_statuses, upsert_status,
     iter_staging, staging_count, staging_to_dataframe, drop_staging,
-    get_staging_message_ids,
+    mark_staging_classified,
 )
 from core.classify import classify_batch, process_classification_results
 from core.s3_archive import upload_csv, verify_upload, s3_configured
-from core.imap_sync import delete_inbox_emails
 
 BATCH_SIZE = 25
 
 st.set_page_config(page_title="Classify", page_icon="🧠", layout="wide")
 st.title("🧠 Classify Mailbox")
 
-accounts   = get_accounts()
-statuses   = {s["email"]: s for s in get_all_statuses()}
+accounts = get_accounts()
+statuses = {s["email"]: s for s in get_all_statuses()}
 
 if not accounts:
     st.warning("No accounts. Go to **1 Accounts** first.")
     st.stop()
 
-# All statuses except archived are eligible — re-run is always safe (records upsert)
 eligible = [
     a for a in accounts
     if statuses.get(a["email"], {}).get("status") in
@@ -41,15 +39,18 @@ selected_email = st.selectbox(
     [a["email"] for a in eligible],
 )
 
-# ── Status summary ───────────────────────────────────────────────────────────
-s = statuses.get(selected_email, {})
-total_in_staging = staging_count(selected_email)
+# ── Status summary ────────────────────────────────────────────────────────────
+s                  = statuses.get(selected_email, {})
+total_in_staging   = staging_count(selected_email)                    # all docs
+remaining_staging  = staging_count(selected_email, only_unclassified=True)  # not yet done
+already_done       = total_in_staging - remaining_staging
 
 with st.container(border=True):
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Emails in Staging", total_in_staging)
-    c2.metric("Batches (~25/call)", max(1, total_in_staging // BATCH_SIZE))
-    c3.metric("Current Status", s.get("status", "—"))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total in Staging",    total_in_staging)
+    c2.metric("Already Classified",  already_done)
+    c3.metric("Remaining",           remaining_staging)
+    c4.metric("Current Status",      s.get("status", "—"))
 
 if s.get("classified_counts"):
     cc = s["classified_counts"]
@@ -64,70 +65,51 @@ if total_in_staging == 0:
     st.warning("Staging collection is empty. Sync first.")
     st.stop()
 
-# ── Manual inbox clean — available whenever staging has data ─────────────────
-if total_in_staging > 0:
-    with st.expander("🧹 Clean Inbox (move classified emails to archive folder)"):
-        st.caption(
-            f"{total_in_staging} staged message IDs available. "
-            "Connects via IMAP and moves those emails from INBOX/Spam to the archive folder."
-        )
-        if st.button("🧹 Clean Inbox Now", width='stretch'):
-            acc = next((a for a in accounts if a["email"] == selected_email), None)
-            if not acc:
-                st.error("Account credentials not found.")
-            else:
-                msg_ids = get_staging_message_ids(selected_email)
-                if not msg_ids:
-                    st.warning("No message IDs in staging.")
-                else:
-                    with st.spinner(f"Moving {len(msg_ids)} emails to archive folder…"):
-                        result = delete_inbox_emails(
-                            email_id=acc["email"],
-                            password=acc["password"],
-                            host=acc["server"],
-                            port=acc["port"],
-                            message_ids=msg_ids,
-                        )
-                    if result.get("error"):
-                        st.error(f"Error: {result['error']}")
-                    else:
-                        st.success(
-                            f"✅ Done — {result['deleted']} moved to Trash, "
-                            f"{result['not_found']} not found, {result['errors']} errors."
-                        )
+if remaining_staging == 0:
+    st.success("✅ All emails in staging are already classified. You can archive the staging data.")
+    st.stop()
 
-# ── Classify ─────────────────────────────────────────────────────────────────
+# ── Classify ──────────────────────────────────────────────────────────────────
 st.divider()
 if st.button("▶ Start Classification", type="primary", width='stretch'):
     upsert_status(selected_email, {"status": "classifying", "last_error": None})
 
-    progress_bar  = st.progress(0)
-    status_box    = st.empty()
+    progress_bar = st.progress(0)
+    status_box   = st.empty()
     totals = {"removal": 0, "unavailable": 0, "prospect": 0, "redirects": 0, "errors": 0}
-    metrics_box   = st.empty()
+    metrics_box  = st.empty()
 
-    batch_num   = 0
-    total_done  = 0
+    batch_num  = 0
+    total_done = 0
 
     for batch in iter_staging(selected_email, batch_size=BATCH_SIZE):
-        batch_num  += 1
-        status_box.info(f"Classifying batch {batch_num} ({total_done + len(batch)}/{total_in_staging})…")
+        batch_num += 1
+        status_box.info(
+            f"Classifying batch {batch_num} "
+            f"({total_done + len(batch)}/{remaining_staging} remaining)…"
+        )
 
         try:
             results = classify_batch(batch)
             counts  = process_classification_results(results, batch, selected_email)
             for k in totals:
                 totals[k] += counts.get(k, 0)
-            # Any emails Gemini silently omitted from its JSON response
+
+            # Mark successfully classified docs so restarts skip them
+            classified_mids = [r.get("message_id") for r in results if r.get("message_id")]
+            mark_staging_classified(selected_email, classified_mids)
+
+            # Emails Gemini/DeepSeek silently omitted stay unclassified → retried next run
             missed = len(batch) - len(results)
             if missed > 0:
                 totals["errors"] += missed
+
         except Exception as e:
             totals["errors"] += len(batch)
-            status_box.warning(f"Batch {batch_num} failed after retries: {e}")
+            status_box.warning(f"Batch {batch_num} failed: {e}")
 
         total_done += len(batch)
-        progress_bar.progress(min(int(total_done / total_in_staging * 100), 100))
+        progress_bar.progress(min(int(total_done / remaining_staging * 100), 100))
 
         metrics_box.markdown(
             f"**Removal:** {totals['removal']}  |  "
@@ -137,12 +119,12 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
             f"**Errors:** {totals['errors']}"
         )
 
-    # Finalize status
+    # Finalize
     upsert_status(selected_email, {
-        "status":              "classified",
-        "classified_counts":   totals,
-        "classified_at":       datetime.now(timezone.utc),
-        "last_error":          None if totals["errors"] == 0 else f"{totals['errors']} batch errors",
+        "status":            "classified",
+        "classified_counts": totals,
+        "classified_at":     datetime.now(timezone.utc),
+        "last_error":        None if totals["errors"] == 0 else f"{totals['errors']} emails missed",
     })
 
     progress_bar.progress(100)
@@ -158,13 +140,10 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
 
     if totals["errors"] > 0:
         st.warning(
-            f"{totals['errors']} emails could not be classified. "
-            "You can re-run classification — already-classified records are safely upserted."
+            f"{totals['errors']} emails could not be classified and will be retried on the next run."
         )
     else:
-        # Zero errors — collect message IDs first, then auto-archive + clean inbox
-        message_ids = get_staging_message_ids(selected_email)
-
+        # Zero errors — auto S3 archive
         if s3_configured():
             archive_box = st.empty()
             archive_box.info("⏳ Auto-archiving staging data to S3…")
@@ -185,36 +164,9 @@ if st.button("▶ Start Classification", type="primary", width='stretch'):
                         archive_box.success(f"✅ Staging auto-archived → S3 key: `{key}`")
                     else:
                         archive_box.warning(f"S3 verify failed ({v['message']}) — staging kept. Archive manually.")
-                        message_ids = []   # don't clean inbox if archive failed
                 else:
                     archive_box.warning(f"S3 upload failed ({err}) — staging kept. Archive manually.")
-                    message_ids = []
             except Exception as e:
                 st.warning(f"Auto-archive error: {e} — go to **5 Archive** to archive manually.")
-                message_ids = []
         else:
             st.info("S3 not configured — go to **5 Archive** to archive staging manually.")
-
-        # Move classified emails to archive folder in IMAP inbox
-        if message_ids:
-            acc = next((a for a in accounts if a["email"] == selected_email), None)
-            if acc:
-                inbox_box = st.empty()
-                inbox_box.info(f"⏳ Moving {len(message_ids)} emails to archive folder…")
-                try:
-                    result = delete_inbox_emails(
-                        email_id=acc["email"],
-                        password=acc["password"],
-                        host=acc["server"],
-                        port=acc["port"],
-                        message_ids=message_ids,
-                    )
-                    if result.get("error"):
-                        inbox_box.warning(f"Inbox archive: {result['error']}")
-                    else:
-                        inbox_box.success(
-                            f"📬 Inbox cleaned — {result['deleted']} moved to Trash, "
-                            f"{result['not_found']} not found, {result['errors']} errors."
-                        )
-                except Exception as e:
-                    inbox_box.warning(f"Inbox archive error: {e}")

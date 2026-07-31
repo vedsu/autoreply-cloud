@@ -99,16 +99,26 @@ def get_all_statuses() -> List[Dict]:
 # Staging (raw fetched emails)
 # ---------------------------------------------------------------------------
 
-def staging_count(email: str) -> int:
-    return db()[staging_col_name(email)].count_documents({})
+def staging_count(email: str, only_unclassified: bool = False) -> int:
+    q = {"classified": {"$ne": True}} if only_unclassified else {}
+    return db()[staging_col_name(email)].count_documents(q)
 
 
 def iter_staging(email: str, batch_size: int = 25):
-    """Yield documents from the staging collection in batches.
-    Loads all docs into memory first to avoid cursor timeout on large mailboxes."""
-    all_docs = list(db()[staging_col_name(email)].find({}))
+    """Yield only unclassified staging docs in batches (skip already-done emails on restart)."""
+    all_docs = list(db()[staging_col_name(email)].find({"classified": {"$ne": True}}))
     for i in range(0, len(all_docs), batch_size):
         yield all_docs[i : i + batch_size]
+
+
+def mark_staging_classified(email: str, message_ids: List[str]):
+    """Stamp successfully classified staging docs so they are skipped on restart."""
+    if not message_ids:
+        return
+    db()[staging_col_name(email)].update_many(
+        {"message_id": {"$in": message_ids}},
+        {"$set": {"classified": True}},
+    )
 
 
 def staging_to_dataframe(email: str):
